@@ -1,0 +1,9 @@
+build/
+log/
+logs/
+install/
+src/micro-ROS-Agent/
+src/micro_ros_msgs/
+build/micro_ros_agent/agent/src/xrceagent/
+*.pyc
+__pycache__/

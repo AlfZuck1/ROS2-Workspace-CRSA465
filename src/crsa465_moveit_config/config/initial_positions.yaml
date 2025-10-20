@@ -1,0 +1,9 @@
+# Default initial positions for CRSA465's ros2_control fake system
+
+initial_positions:
+  junta_0_1: 0
+  junta_1_2: 0
+  junta_2_3: 0
+  junta_3_4: 0
+  junta_4_5: 0
+  junta_5_6: 0

@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: CRSA465
+    relative_path: urdf/CRSA465.urdf
+  srdf:
+    relative_path: config/CRSA465.srdf
+  package_settings:
+    author_name: alfredo
+    author_email: Alfsanvaz@outlook.com
+    generated_timestamp: 1759894344
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
