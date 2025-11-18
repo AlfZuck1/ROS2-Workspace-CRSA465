@@ -1,0 +1,8 @@
+<library path="crsa465_hw_interface">
+  <class
+      name="crsa465_hw_interface/CRSA465Hardware"
+      type="crsa465_hw_interface::CRSA465Hardware"
+      base_class_type="hardware_interface::SystemInterface">
+    <description>Hardware interface for CRS A465 robot</description>
+  </class>
+</library>
