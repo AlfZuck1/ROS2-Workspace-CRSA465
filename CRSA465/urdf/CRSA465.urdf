@@ -409,7 +409,7 @@
   <ros2_control name="CRSA465" type="system">
   <hardware>
   <plugin>crsa465_hw_interface/CRSA465Hardware</plugin>
-    <param name="port">/dev/pts/5</param>
+    <param name="port">/dev/pts/7</param>
     <param name="baudrate">115200</param>
   </hardware>
 

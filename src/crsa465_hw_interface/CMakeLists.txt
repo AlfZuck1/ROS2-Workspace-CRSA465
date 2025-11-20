@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
+find_package(crsa465_interfaces REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/crsa465_hardware.cpp
@@ -18,6 +19,7 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp
   hardware_interface
   pluginlib
+  crsa465_interfaces
 )
 
 pluginlib_export_plugin_description_file(

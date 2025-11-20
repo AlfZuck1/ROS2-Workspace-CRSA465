@@ -18,7 +18,8 @@ from CRSA465.position_goal import move_to_pose_goal
 from rclpy.callback_groups import ReentrantCallbackGroup
 from CRSA465 import crsa465_config as robot
 from trajectory_msgs.msg import JointTrajectory
-import time
+from crsa465_interfaces.srv import Command
+import asyncio
 import os
 
 try:
@@ -115,21 +116,12 @@ class ControlNode(Node):
     def __init__(self):
         super().__init__("secure_joint_controller")
         self.publisher = self.create_publisher(JointState, "/joint_states", 10)
-        self.joint6_pub = self.create_publisher(Float64, "/joint6_command", 10)
-        self.joint6_sub = self.create_subscription(Float64, "joint6_state", self.joint6_state_callback, 10)
         self.current_angle = 0.0
+        self.command_client = self.create_client(Command, "command_controller")
+        while not self.command_client.wait_for_service(timeout_sec=1.0):
+            logging.info("[ROS] Esperando por el servicio 'command_controller'...")
         logging.info("[ROS] ControlNode initialized and ready.")
-
-    def send_joint6_command(self, grados: float):
-        msg = Float64()
-        msg.data = grados * 3.14159 / 180.0
-        self.joint6_pub.publish(msg)
-        logging.info(f"[ROS] Enviando comando a junta_5_6: {grados}° ({msg.data:.3f} rad)")
-
-    def joint6_state_callback(self, msg: Float64):
-        self.current_angle = msg.data
-        logging.debug(f"[ROS] Ángulo actual de junta_5_6 recibido: {self.current_angle:.3f} rad")
-
+        
     def publish_joint_state(self, names, positions):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -137,6 +129,18 @@ class ControlNode(Node):
         msg.position = [float(p) for p in positions]
         self.publisher.publish(msg)
         logging.info(f"[ROS] Published joint states: {dict(zip(names, positions))}")
+    
+    def send_hw_command(self, cmd: str) -> bool:
+        request = Command.Request()
+        request.command = cmd
+
+        future = self.command_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+
+        if future.result() is None:
+            return False
+
+        return future.result().success
         
 # ---------------------------------------------------
 # Nodo ROS2 con control cartesiano (MoveIt2)
@@ -343,17 +347,28 @@ async def send_command(request: Request):
     ros_node.publish_joint_state(names, positions)
     return {"status": "ok"}
 
-@app.post("/send_joint6_command")
-async def send_joint6_command(request: Request):
-    data = await request.json()
-    if data.get("password") != PASSWORD:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    if "value" not in data:
-        raise HTTPException(status_code=400, detail="Missing 'value'")
+@app.post("/send_command/{cmd}")
+async def send_hw_command_endpoint(request: Request, cmd: str):
+    global ros_node
+    if cmd not in ["reset", "home", "stop"]:
+        raise HTTPException(status_code=400, detail="Invalid command")
 
-    value = float(data["value"])
-    ros_node.send_joint6_command(value)
-    return {"status": "ok", "joint6_value": value, "current_angle": ros_node.current_angle}
+    data = await request.json()
+    if data.get("password") != PASSWORD and cmd != "stop":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Ejecutar la llamada a ROS en un threadpool para no bloquear uvicorn event loop
+    loop = asyncio.get_running_loop()
+    try:
+        success = await loop.run_in_executor(None, ros_node.send_hw_command, cmd)
+    except Exception as e:
+        logging.exception(f"Error calling send_hw_command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Command execution failed")
+
+    return {"status": "ok", "message": f"Command '{cmd}' executed successfully"}
 
 @app.post("/send_positions")
 async def send_multiple_positions(request: Request):

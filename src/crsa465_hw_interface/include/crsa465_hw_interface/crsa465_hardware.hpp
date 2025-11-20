@@ -7,6 +7,7 @@
 #include <deque>
 #include <atomic>
 
+#include "crsa465_interfaces/srv/command.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <hardware_interface/system_interface.hpp>
@@ -39,6 +40,7 @@ private:
     void io_thread_fn();
     void process_rx_buffer();
     void publisher_thread_fn();
+    bool send_command(const std::string & cmd);
 
     std::string port_;
     int baudrate_;
@@ -61,13 +63,18 @@ private:
 
     static constexpr uint8_t HDR_RX0 = 0xFD;
     static constexpr uint8_t HDR_RX1 = 0xFC;
-    static constexpr uint8_t HDR_TX0 = 0xFA;
-    static constexpr uint8_t HDR_TX1 = 0xFB;
+    static constexpr uint8_t HDR_TX0 = 0xFF;
+    static constexpr uint8_t HDR_TX1 = 0xFE;
+    static constexpr uint8_t CMD_HEADER = 0b10101010;
+    static constexpr uint8_t CMD_STOP = 0x01;
+    static constexpr uint8_t CMD_HOME = 0x02;
+    static constexpr uint8_t CMD_RESET = 0x03;
     static constexpr size_t STATE_PACKET_SIZE = 2 + 6 * 4;
 
     // Publisher
     std::shared_ptr<rclcpp::Node> pub_node_;
     rclcpp::Publisher<control_msgs::msg::JointTrajectoryControllerState>::SharedPtr state_pub_;
+    rclcpp::Service<crsa465_interfaces::srv::Command>::SharedPtr command_srv_;
     std::thread pub_thread_;
     std::atomic<bool> pub_running_{false};
 };
