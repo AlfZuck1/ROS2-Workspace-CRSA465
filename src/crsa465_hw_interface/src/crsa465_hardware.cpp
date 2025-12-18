@@ -94,39 +94,49 @@ namespace crsa465_hw_interface
     {
         static int contador = 0;
         contador++;
-        std::vector<uint8_t> pkt;
-        pkt.reserve(2 + n_joints_ * sizeof(float) * 2);
-        pkt.push_back(HDR_TX0);
-        pkt.push_back(HDR_TX1);
 
-        for (size_t i = 0; i < n_joints_; ++i) {
-            // TODO: convertir el 10000 de manera correcta
-            float pos = static_cast<float>(hw_commands_[i]*10000);
-            uint8_t bpos[4];
-            std::memcpy(bpos, &pos, sizeof(float));
-            pkt.insert(pkt.end(), bpos, bpos + 4);
+        constexpr size_t PACKET_SIZE = 2 + 6 * sizeof(int32_t) * 2;
+        std::vector<uint8_t> pkt(PACKET_SIZE);
+
+        pkt[0] = HDR_TX0;
+        pkt[1] = HDR_TX1;
+
+        for (size_t i = 0; i < n_joints_; ++i)
+        {
+            // rad → ticks
+            int32_t ticks = static_cast<int32_t>(
+                hw_commands_[i] / ticks_to_rad_
+            );
+
+            std::memcpy(pkt.data() + 2 + i * 4, &ticks, sizeof(int32_t));
+        }
+
+        for (size_t i = 0; i < n_joints_; ++i)
+        {
+            // Velocidad fija por ahora
+            int32_t vel = static_cast<int32_t>(100);
+            std::memcpy(pkt.data() + 2 + n_joints_ * 4 + i * 4, &vel, sizeof(int32_t));
         }
         
-        for (size_t i = 0; i < n_joints_; ++i) {
-            float vel = static_cast<float>(100.0);
-            uint8_t bvel[4];
-            std::memcpy(bvel, &vel, sizeof(float));
-            pkt.insert(pkt.end(), bvel, bvel + 4);
+
+        if (contador % 200 == 0)
+        {
+            RCLCPP_INFO(
+                rclcpp::get_logger("CRS_HW"),
+                "TX ticks: %d %d %d %d %d %d",
+                *reinterpret_cast<int32_t*>(pkt.data() + 2),
+                *reinterpret_cast<int32_t*>(pkt.data() + 6),
+                *reinterpret_cast<int32_t*>(pkt.data() + 10),
+                *reinterpret_cast<int32_t*>(pkt.data() + 14),
+                *reinterpret_cast<int32_t*>(pkt.data() + 18),
+                *reinterpret_cast<int32_t*>(pkt.data() + 22)
+            );
         }
 
-        if(contador % 200 == 0){
-            RCLCPP_INFO(rclcpp::get_logger("CRS_HW"), "WRITE called: %f %f %f %f %f %f",
-            hw_commands_[0], hw_commands_[1], hw_commands_[2],
-            hw_commands_[3], hw_commands_[4], hw_commands_[5]);
+        {
+            std::lock_guard<std::mutex> lk(tx_mtx_);
+            tx_queue_.push_back(std::move(pkt));
         }
-
-        std::lock_guard<std::mutex> lk(tx_mtx_);
-        std::stringstream ss;
-        ss << "Enqueuing packet: ";
-        for (auto b : pkt) ss << std::hex << std::setw(2) << std::setfill('0') << (int)b << " ";
-        // RCLCPP_INFO(rclcpp::get_logger("CRS_HW"), "%s", ss.str().c_str());
-        tx_queue_.push_back(std::move(pkt));
-
         return return_type::OK;
     }
 
@@ -235,63 +245,56 @@ namespace crsa465_hw_interface
     }
 
     void CRSA465Hardware::process_rx_buffer()
+{
+    std::lock_guard<std::mutex> lk(rx_mtx_);
+
+    static const uint8_t HEADER[2] = {HDR_RX0, HDR_RX1};
+    const size_t PACKET_SIZE = 26;
+
+    while (true)
     {
-        std::lock_guard<std::mutex> lk(rx_mtx_);
+        auto it = std::search(
+            rx_buffer_.begin(),
+            rx_buffer_.end(),
+            std::begin(HEADER),
+            std::end(HEADER)
+        );
 
-        static const uint8_t HEADER[2] = {HDR_RX0, HDR_RX1};
-        const size_t PACKET_SIZE = 26;
+        if (it == rx_buffer_.end())
+            return;
 
-        while (true)
+        size_t pos = std::distance(rx_buffer_.begin(), it);
+
+        if (rx_buffer_.size() < pos + PACKET_SIZE)
+            return;
+
+        std::vector<uint8_t> pkt(it, it + PACKET_SIZE);
+        rx_buffer_.erase(rx_buffer_.begin(), it + PACKET_SIZE);
+
+        int32_t ticks[6];
+
+        for (size_t j = 0; j < 6; ++j)
         {
-            // Buscar el header FD FC
-            auto it = std::search(
-                rx_buffer_.begin(),
-                rx_buffer_.end(),
-                std::begin(HEADER),
-                std::end(HEADER)
-            );
-
-            if (it == rx_buffer_.end()) {
-                // No hay header -> esperar más datos
-                return;
-            }
-
-            size_t pos = std::distance(rx_buffer_.begin(), it);
-
-            // Verificar que hay suficientes bytes para un paquete entero
-            if (rx_buffer_.size() < pos + PACKET_SIZE)
-                return;  // Llegará más data
-
-            // Extraer paquete
-            std::vector<uint8_t> pkt(it, it + PACKET_SIZE);
-
-            // Eliminar bytes previos + paquete completo
-            rx_buffer_.erase(rx_buffer_.begin(), it + PACKET_SIZE);
-
-            // Parsear floats
-            float vals[6];
-            for (size_t j = 0; j < 6; ++j) {
-                std::memcpy(&vals[j], pkt.data() + 2 + j * 4, sizeof(float));
-            }
-
-            // Guardar en last_counts_
-            {
-                std::lock_guard<std::mutex> lk2(last_counts_mtx_);
-                for (size_t j = 0; j < n_joints_; ++j) 
-                {
-                    last_counts_[j] = vals[j];
-                    hw_positions_[j] = vals[j] * ticks_to_rad_;
-                }
-            }
-
-            // Log
-            RCLCPP_INFO(
-                rclcpp::get_logger("CRS_HW"),
-                "RX encoders: %f %f %f %f %f %f",
-                vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]
-            );
+            std::memcpy(&ticks[j], pkt.data() + 2 + j * 4, sizeof(int32_t));
         }
+
+        {
+            std::lock_guard<std::mutex> lk2(last_counts_mtx_);
+            for (size_t j = 0; j < n_joints_; ++j)
+            {
+                last_counts_[j] = ticks[j];
+                hw_positions_[j] = static_cast<double>(ticks[j]) * ticks_to_rad_;
+            }
+        }
+
+        RCLCPP_INFO(
+            rclcpp::get_logger("CRS_HW"),
+            "RX ticks: %d %d %d %d %d %d",
+            ticks[0], ticks[1], ticks[2], ticks[3], ticks[4], ticks[5]
+        );
     }
+}
+
 
     bool CRSA465Hardware::open_serial()
     {

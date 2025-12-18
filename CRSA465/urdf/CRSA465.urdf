@@ -411,6 +411,7 @@
   <plugin>crsa465_hw_interface/CRSA465Hardware</plugin>
     <param name="port">/dev/pts/7</param>
     <param name="baudrate">115200</param>
+    <param name="ticks_to_rad">0.00003141593</param>
   </hardware>
 
   <joint name="junta_0_1">
