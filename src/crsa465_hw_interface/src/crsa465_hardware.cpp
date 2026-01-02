@@ -97,6 +97,7 @@ namespace crsa465_hw_interface
 
         constexpr size_t PACKET_SIZE = 2 + 6 * sizeof(int32_t) * 2;
         std::vector<uint8_t> pkt(PACKET_SIZE);
+        std::vector<uint8_t> pkt_before(PACKET_SIZE);
 
         pkt[0] = HDR_TX0;
         pkt[1] = HDR_TX1;
@@ -119,7 +120,7 @@ namespace crsa465_hw_interface
         }
         
 
-        if (contador % 200 == 0)
+        if (contador % 10 == 0)
         {
             RCLCPP_INFO(
                 rclcpp::get_logger("CRS_HW"),
@@ -135,7 +136,11 @@ namespace crsa465_hw_interface
 
         {
             std::lock_guard<std::mutex> lk(tx_mtx_);
+            if(pkt == pkt_before){ // Evitar enviar paquetes idénticos seguidos
+                return return_type::OK;
+            }
             tx_queue_.push_back(std::move(pkt));
+            pkt_before = pkt;
         }
         return return_type::OK;
     }
@@ -200,7 +205,7 @@ namespace crsa465_hw_interface
                         try {
                             // boost::asio::write asegura envío completo
                             size_t bytes_written = boost::asio::write(*serial_port_, boost::asio::buffer(p));
-                            if(contador % 300 == 0){
+                            if(contador % 5 == 0){
                                 RCLCPP_INFO(rclcpp::get_logger("CRS_HW"), "WRITE in IO thread: %zu bytes", bytes_written);
                             }
                         } catch (const std::exception &e) {
@@ -286,12 +291,16 @@ namespace crsa465_hw_interface
                 hw_positions_[j] = static_cast<double>(ticks[j]) * ticks_to_rad_;
             }
         }
-
-        RCLCPP_INFO(
-            rclcpp::get_logger("CRS_HW"),
-            "RX ticks: %d %d %d %d %d %d",
-            ticks[0], ticks[1], ticks[2], ticks[3], ticks[4], ticks[5]
-        );
+        static int contador = 0;
+        contador++;
+        if (contador % 100 == 0)
+        {
+            RCLCPP_INFO(
+                rclcpp::get_logger("CRS_HW"),
+                "RX ticks: %d %d %d %d %d %d",
+                ticks[0], ticks[1], ticks[2], ticks[3], ticks[4], ticks[5]
+            );
+        }
     }
 }
 
@@ -332,8 +341,9 @@ namespace crsa465_hw_interface
         uint8_t command_byte = 0x00;
 
         if (cmd == "stop") command_byte = CMD_STOP;
+        else if (cmd == "run") command_byte = CMD_RUN;
         else if (cmd == "home") command_byte = CMD_HOME;
-        else if (cmd == "reset") command_byte = CMD_RESET;
+        else if (cmd == "calibrate") command_byte = CMD_CALIBRATE;
         else 
         {
             RCLCPP_WARN(rclcpp::get_logger("CRS_HW"), "Unknown command: %s", cmd.c_str());

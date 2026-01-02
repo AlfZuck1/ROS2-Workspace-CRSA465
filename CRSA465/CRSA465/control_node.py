@@ -115,20 +115,11 @@ def dict_from_point(row) -> Dict:
 class ControlNode(Node):
     def __init__(self):
         super().__init__("secure_joint_controller")
-        self.publisher = self.create_publisher(JointState, "/joint_states", 10)
         self.current_angle = 0.0
         self.command_client = self.create_client(Command, "command_controller")
         while not self.command_client.wait_for_service(timeout_sec=1.0):
             logging.info("[ROS] Esperando por el servicio 'command_controller'...")
         logging.info("[ROS] ControlNode initialized and ready.")
-        
-    def publish_joint_state(self, names, positions):
-        msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name = names
-        msg.position = [float(p) for p in positions]
-        self.publisher.publish(msg)
-        logging.info(f"[ROS] Published joint states: {dict(zip(names, positions))}")
     
     def send_hw_command(self, cmd: str) -> bool:
         request = Command.Request()
@@ -334,19 +325,6 @@ def plan_robot_trajectory(first_pose: JointState, poses: list, cartesian: bool):
 # ---------------------------------------------------
 # Endpoints API REST
 # ---------------------------------------------------
-@app.post("/send_command")
-async def send_command(request: Request):
-    data = await request.json()
-    if data.get("password") != PASSWORD:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    names, positions = data.get("name", []), data.get("position", [])
-    if not isinstance(names, list) or not isinstance(positions, list) or len(names) != len(positions):
-        raise HTTPException(status_code=400, detail="Invalid input")
-
-    ros_node.publish_joint_state(names, positions)
-    return {"status": "ok"}
-
 @app.post("/send_command/{cmd}")
 async def send_hw_command_endpoint(request: Request, cmd: str):
     global ros_node

@@ -63,12 +63,13 @@ private:
 
     static constexpr uint8_t HDR_RX0 = 0xFD;
     static constexpr uint8_t HDR_RX1 = 0xFC;
-    static constexpr uint8_t HDR_TX0 = 0xFF;
+    static constexpr uint8_t HDR_TX0 = 0xAA;
     static constexpr uint8_t HDR_TX1 = 0xFE;
-    static constexpr uint8_t CMD_HEADER = 0b10101010;
+    static constexpr uint8_t CMD_HEADER = 0xAA;
     static constexpr uint8_t CMD_STOP = 0x01;
-    static constexpr uint8_t CMD_HOME = 0x02;
-    static constexpr uint8_t CMD_RESET = 0x03;
+    static constexpr uint8_t CMD_RUN = 0x02;
+    static constexpr uint8_t CMD_HOME = 0x03;
+    static constexpr uint8_t CMD_CALIBRATE = 0x04;
     static constexpr size_t STATE_PACKET_SIZE = 2 + 6 * 4;
 
     // Publisher
