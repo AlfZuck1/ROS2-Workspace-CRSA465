@@ -328,7 +328,7 @@ def plan_robot_trajectory(first_pose: JointState, poses: list, cartesian: bool):
 @app.post("/send_command/{cmd}")
 async def send_hw_command_endpoint(request: Request, cmd: str):
     global ros_node
-    if cmd not in ["reset", "home", "stop"]:
+    if cmd not in ["run", "home", "stop"]:
         raise HTTPException(status_code=400, detail="Invalid command")
 
     data = await request.json()
@@ -347,6 +347,52 @@ async def send_hw_command_endpoint(request: Request, cmd: str):
         raise HTTPException(status_code=500, detail="Command execution failed")
 
     return {"status": "ok", "message": f"Command '{cmd}' executed successfully"}
+
+@app.post("/calibrate")
+async def calibrate_endpoint(request: Request):
+    global ros_node
+
+    data = await request.json()
+
+    # -------- Validaciones --------
+    if data.get("password") != PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        joint = int(data["joint"])
+        brake = int(data["brake_release"])
+        position = int(data["move_to_position"])
+    except (KeyError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="Missing or invalid fields: joint, brake_release, move_to_position"
+        )
+
+    # -------- Construir comando OPCIÓN A --------
+    cmd = f"calibrate {joint} {brake} {position}"
+
+    loop = asyncio.get_running_loop()
+    try:
+        success = await loop.run_in_executor(
+            None,
+            ros_node.send_hw_command,
+            cmd
+        )
+    except Exception as e:
+        logging.exception(f"Error calling send_hw_command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Calibration command failed")
+
+    return {
+        "status": "ok",
+        "message": "Calibration command sent",
+        "joint": joint,
+        "brake_release": brake,
+        "move_to_position": position
+    }
+
 
 @app.post("/send_positions")
 async def send_multiple_positions(request: Request):
