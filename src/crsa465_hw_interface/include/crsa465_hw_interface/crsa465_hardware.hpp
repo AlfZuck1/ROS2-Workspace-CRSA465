@@ -17,10 +17,17 @@
 #include <fcntl.h>
 
 
+
 namespace crsa465_hw_interface
 {
     using hardware_interface::CallbackReturn;
     using hardware_interface::return_type;
+
+    typedef struct __attribute__((__packed__)) {
+        uint8_t calibrate_j;
+        uint8_t brake_release;
+        int32_t  move_to_position;
+    }calibrate_request_t;
 
     class CRSA465Hardware : public hardware_interface::SystemInterface
     {
@@ -80,10 +87,4 @@ namespace crsa465_hw_interface
             std::thread pub_thread_;
             std::atomic<bool> pub_running_{false};
     };
-
-    typedef struct __attribute__((__packed__)) {
-        uint8_t calibrate_j;
-        uint8_t brake_release;
-        int32_t  move_to_position;
-    }calibrate_request_t;
 } // namespace

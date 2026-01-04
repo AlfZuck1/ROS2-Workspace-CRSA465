@@ -30,73 +30,104 @@ namespace crsa465_hw_interface
         hw_commands_.assign(n_joints_, 0.0);
         last_counts_.assign(n_joints_, 0);
 
-        port_ = info.hardware_parameters.count("port") ? info.hardware_parameters.at("port") : "/dev/ttyACM0";
-        baudrate_ = info.hardware_parameters.count("baudrate") ? std::stoi(info.hardware_parameters.at("baudrate")) : 115200;
-        ticks_to_rad_ = info.hardware_parameters.count("ticks_to_rad") ? std::stod(info.hardware_parameters.at("ticks_to_rad")) : 1.0;
+        port_ = info.hardware_parameters.count("port")
+            ? info.hardware_parameters.at("port")
+            : "/dev/ttyACM0";
 
-        RCLCPP_INFO(rclcpp::get_logger("CRS_HW"), "on_init: port=%s baud=%d joints=%zu ticks_to_rad=%f", port_.c_str(), baudrate_, n_joints_, ticks_to_rad_);
+        baudrate_ = info.hardware_parameters.count("baudrate")
+            ? std::stoi(info.hardware_parameters.at("baudrate"))
+            : 115200;
 
-        if (!open_serial()) {
-            RCLCPP_ERROR(rclcpp::get_logger("CRS_HW"), "Failed to open serial port %s", port_.c_str());
+        ticks_to_rad_ = info.hardware_parameters.count("ticks_to_rad")
+            ? std::stod(info.hardware_parameters.at("ticks_to_rad"))
+            : 1.0;
+
+        RCLCPP_INFO(
+            rclcpp::get_logger("CRS_HW"),
+            "on_init: port=%s baud=%d joints=%zu ticks_to_rad=%f",
+            port_.c_str(), baudrate_, n_joints_, ticks_to_rad_
+        );
+
+        if (!open_serial())
+        {
+            RCLCPP_ERROR(
+                rclcpp::get_logger("CRS_HW"),
+                "Failed to open serial port %s",
+                port_.c_str()
+            );
             return CallbackReturn::ERROR;
         }
 
         io_running_ = true;
         io_thread_ = std::thread(&CRSA465Hardware::io_thread_fn, this);
 
-        // Crear nodo interno para publicar controller_state
         pub_node_ = std::make_shared<rclcpp::Node>("crsa465_hw_publisher_node");
-        state_pub_ = pub_node_->create_publisher<control_msgs::msg::JointTrajectoryControllerState>("arm_controller/controller_state", 10);
 
-        command_srv_ = pub_node_->create_service<crsa465_interfaces::srv::Command>(
-        "command_controller",
-        [this](
-            const std::shared_ptr<crsa465_interfaces::srv::Command::Request> request,
-            std::shared_ptr<crsa465_interfaces::srv::Command::Response> response)
-        {
-            RCLCPP_INFO(
-                pub_node_->get_logger(),
-                "Received command: %s",
-                request->command.c_str()
+        state_pub_ =
+            pub_node_->create_publisher<
+                control_msgs::msg::JointTrajectoryControllerState
+            >("arm_controller/controller_state", 10);
+
+        command_srv_ =
+            pub_node_->create_service<crsa465_interfaces::srv::Command>(
+                "command_controller",
+                [this](
+                    const std::shared_ptr<crsa465_interfaces::srv::Command::Request> request,
+                    std::shared_ptr<crsa465_interfaces::srv::Command::Response> response)
+                {
+                    RCLCPP_INFO(
+                        pub_node_->get_logger(),
+                        "Received command: %s",
+                        request->command.c_str()
+                    );
+
+                    /* ---------- CALIBRATE ---------- */
+                    if (request->command.rfind("calibrate", 0) == 0)
+                    {
+                        std::istringstream iss(request->command);
+                        std::string cmd;
+
+                        uint32_t joint;
+                        uint32_t brake;
+                        int32_t pos;
+
+                        iss >> cmd >> joint >> brake >> pos;
+
+                        if (iss.fail())
+                        {
+                            response->success = false;
+                            response->message =
+                                "Invalid calibrate format. Use: calibrate <joint> <brake> <pos>";
+                            RCLCPP_WARN(pub_node_->get_logger(), "%s", response->message.c_str());
+                            return;
+                        }
+
+                        calibrate_request_t req{};
+                        req.calibrate_j      = static_cast<uint8_t>(joint);
+                        req.brake_release    = static_cast<uint8_t>(brake);
+                        req.move_to_position = pos;
+
+                        bool ok = this->send_calibrate_command(req);
+                        response->success = ok;
+                        response->message = ok
+                            ? "Calibration command sent"
+                            : "Failed to send calibration command";
+                        return;
+                    }
+
+                    /* ---------- COMANDOS SIMPLES ---------- */
+                    bool ok = this->send_command(request->command);
+                    response->success = ok;
+                    response->message = ok
+                        ? "Command executed successfully"
+                        : "Failed to execute command";
+                }
             );
 
-            /* ---- OPCIÓN A: detectar calibrate ---- */
-            if (request->command.rfind("calibrate", 0) == 0)
-            {
-                calibrate_request_t req{};
-                std::istringstream iss(request->command);
-                std::string cmd;
+        pub_running_ = true;
+        pub_thread_ = std::thread(&CRSA465Hardware::publisher_thread_fn, this);
 
-                iss >> cmd
-                    >> req.calibrate_j
-                    >> req.brake_release
-                    >> req.move_to_position;
-
-                if (iss.fail())
-                {
-                    response->success = false;
-                    response->message = "Invalid calibrate format. Use: calibrate <joint> <brake> <pos>";
-                    RCLCPP_WARN(pub_node_->get_logger(), "%s", response->message.c_str());
-                    return;
-                }
-
-                bool ok = this->send_calibrate_command(req);
-                response->success = ok;
-                response->message = ok
-                    ? "Calibration command sent"
-                    : "Failed to send calibration command";
-                return;
-            }
-
-            /* ---- comandos simples ---- */
-            bool ok = this->send_command(request->command);
-            response->success = ok;
-            response->message = ok
-                ? "Command executed successfully"
-                : "Failed to execute command";
-        }
-    );
-
+        return CallbackReturn::SUCCESS;
     }
 
     std::vector<hardware_interface::StateInterface> CRSA465Hardware::export_state_interfaces()
