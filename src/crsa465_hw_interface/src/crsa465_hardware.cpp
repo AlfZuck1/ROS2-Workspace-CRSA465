@@ -52,18 +52,51 @@ namespace crsa465_hw_interface
         "command_controller",
         [this](
             const std::shared_ptr<crsa465_interfaces::srv::Command::Request> request,
-            std::shared_ptr<crsa465_interfaces::srv::Command::Response> response) 
+            std::shared_ptr<crsa465_interfaces::srv::Command::Response> response)
         {
-            RCLCPP_INFO(pub_node_->get_logger(), "Received command: %s", request->command.c_str());
+            RCLCPP_INFO(
+                pub_node_->get_logger(),
+                "Received command: %s",
+                request->command.c_str()
+            );
+
+            /* ---- OPCIÓN A: detectar calibrate ---- */
+            if (request->command.rfind("calibrate", 0) == 0)
+            {
+                calibrate_request_t req{};
+                std::istringstream iss(request->command);
+                std::string cmd;
+
+                iss >> cmd
+                    >> req.calibrate_j
+                    >> req.brake_release
+                    >> req.move_to_position;
+
+                if (iss.fail())
+                {
+                    response->success = false;
+                    response->message = "Invalid calibrate format. Use: calibrate <joint> <brake> <pos>";
+                    RCLCPP_WARN(pub_node_->get_logger(), "%s", response->message.c_str());
+                    return;
+                }
+
+                bool ok = this->send_calibrate_command(req);
+                response->success = ok;
+                response->message = ok
+                    ? "Calibration command sent"
+                    : "Failed to send calibration command";
+                return;
+            }
+
+            /* ---- comandos simples ---- */
             bool ok = this->send_command(request->command);
             response->success = ok;
-            response->message = ok ? "Command executed successfully" : "Failed to execute command";
-        });
+            response->message = ok
+                ? "Command executed successfully"
+                : "Failed to execute command";
+        }
+    );
 
-        pub_running_ = true;
-        pub_thread_ = std::thread(&CRSA465Hardware::publisher_thread_fn, this);
-
-        return CallbackReturn::SUCCESS;
     }
 
     std::vector<hardware_interface::StateInterface> CRSA465Hardware::export_state_interfaces()
@@ -119,6 +152,9 @@ namespace crsa465_hw_interface
             std::memcpy(pkt.data() + 2 + n_joints_ * 4 + i * 4, &vel, sizeof(int32_t));
         }
         
+        if (pkt == pkt_before) {
+            return return_type::OK;
+        }
 
         if (contador % 10 == 0)
         {
@@ -136,10 +172,7 @@ namespace crsa465_hw_interface
 
         {
             std::lock_guard<std::mutex> lk(tx_mtx_);
-            if(pkt == pkt_before){ // Evitar enviar paquetes idénticos seguidos
-                return return_type::OK;
-            }
-            tx_queue_.push_back(std::move(pkt));
+            tx_queue_.push_back(pkt);
             pkt_before = pkt;
         }
         return return_type::OK;
@@ -362,6 +395,35 @@ namespace crsa465_hw_interface
         }
 
         RCLCPP_INFO(rclcpp::get_logger("CRS_HW"),"Enqueued command '%s' (0x%02X)", cmd.c_str(), command_byte);
+        return true;
+    }
+
+    bool CRSA465Hardware::send_calibrate_command(const calibrate_request_t & req)
+    {
+        std::vector<uint8_t> pkt;
+        pkt.reserve(2 + sizeof(calibrate_request_t));
+
+        pkt.push_back(CMD_HEADER);
+        pkt.push_back(CMD_CALIBRATE);
+
+        const uint8_t * raw =
+            reinterpret_cast<const uint8_t *>(&req);
+
+        pkt.insert(pkt.end(), raw, raw + sizeof(calibrate_request_t));
+
+        {
+            std::lock_guard<std::mutex> lk(tx_mtx_);
+            tx_queue_.push_back(std::move(pkt));
+        }
+
+        RCLCPP_INFO(
+            rclcpp::get_logger("CRS_HW"),
+            "Enqueued CALIBRATE: joint=%d brake=%d pos=%d",
+            req.calibrate_j,
+            req.brake_release,
+            req.move_to_position
+        );
+
         return true;
     }
 
