@@ -11,7 +11,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
-from datetime import datetime
+from datetime import datetime, time
 from typing import Dict
 import json
 from CRSA465.position_goal import move_to_pose_goal
@@ -19,6 +19,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from CRSA465 import crsa465_config as robot
 from trajectory_msgs.msg import JointTrajectory
 from crsa465_interfaces.srv import Command
+from control_msgs.msg import JointTrajectoryControllerState
 import asyncio
 import os
 
@@ -46,6 +47,18 @@ app.add_middleware(
 )
 
 ros_node = None
+
+# ---------------------------------------------------
+# Controller state variables
+# ---------------------------------------------------
+
+last_error = []
+state_lock = threading.Lock()  
+
+def controller_state_cb(msg: JointTrajectoryControllerState):
+    global last_error
+    with state_lock:
+        last_error = list(msg.error.positions)
 
 # ---------------------------------------------------
 # Configuración logging
@@ -152,6 +165,13 @@ class CartesianControlNode(ControlNode):
             self.moveit2.max_velocity = 0.5
             self.moveit2.max_acceleration = 0.5
             logging.info(f"[ROS] MoveIt2 group '{self.PLANNING_GROUP}' listo.")
+            self.create_subscription(
+                JointTrajectoryControllerState,
+                "/arm_controller/controller_state",
+                controller_state_cb,
+                10
+            )
+
         except Exception as e:
             logging.warning(f"[ROS] No se pudo inicializar pymoveit2: {e}")
 
@@ -183,27 +203,67 @@ def execute_movement(positions, quats, cartesian, synchronous, cancel_after_secs
         if move_lock.locked():
             move_lock.release()
 
+def wait_until_reached(
+    eps=0.01,          # ~0.5°
+    stable_cycles=10,  # ciclos consecutivos
+    rate_hz=50
+    ):
+    global last_error
+
+    stable = 0
+    period = 1.0 / rate_hz
+
+    logging.info("[ROS - EX] Esperando llegada física del robot...")
+
+    while rclpy.ok():
+        with state_lock:
+            if not last_error:
+                time.sleep(period)
+                continue
+            max_err = max(abs(e) for e in last_error)
+
+        if max_err < eps:
+            stable += 1
+            if stable >= stable_cycles:
+                logging.info("[ROS - EX] Posición alcanzada (feedback real)")
+                return True
+        else:
+            stable = 0
+
+        time.sleep(period)
+
+    return False
+
+
 def execute_all_trajectories():
     global stored_trajectories, cancel_requested, move_lock
 
     if move_lock.locked():
-        logging.warn("[ROS - EX] Movimiento ya en progreso, saliendo.")
+        logging.warning("[ROS - EX] Movimiento ya en progreso, saliendo.")
         return
 
     move_lock.acquire()
     try:
         for traj in stored_trajectories:
             if cancel_requested.is_set():
-                logging.info("[ROS - EX] Ejecución cancelada por usuario antes de iniciar trayectoria.")
+                logging.info("[ROS - EX] Ejecución cancelada por usuario.")
                 break
-            try:
-                logging.info("[ROS - EX] Empezando trayectoria")
-                ros_node.moveit2.execute(traj)
-            except Exception as traj_exc:
-                logging.error(f"[ROS - EX] Error ejecutando trayectoria: {traj_exc}")
+
+            logging.info("[ROS - EX] Ejecutando trayectoria")
+            ros_node.moveit2.execute(traj)
+
+            # ⬅⬅⬅ AQUÍ ESTÁ LA DIFERENCIA
+            reached = wait_until_reached(
+                eps=0.01,
+                stable_cycles=10,
+                rate_hz=50
+            )
+
+            if not reached:
+                logging.error("[ROS - EX] No se alcanzó la posición final")
                 break
     except Exception as e:
-        logging.error(f"[ROS - EX] Error inesperado en ejecución: {e}")
+        logging.error(f"[ROS - EX] Error inesperado: {e}")
 
     finally:
         stored_trajectories.clear()

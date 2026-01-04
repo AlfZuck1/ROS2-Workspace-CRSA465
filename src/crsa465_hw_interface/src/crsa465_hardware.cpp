@@ -161,7 +161,7 @@ namespace crsa465_hw_interface
 
         constexpr size_t PACKET_SIZE = 2 + 6 * sizeof(int32_t) * 2;
         std::vector<uint8_t> pkt(PACKET_SIZE);
-        std::vector<uint8_t> pkt_before(PACKET_SIZE);
+        static std::vector<uint8_t> pkt_before(PACKET_SIZE);
 
         pkt[0] = HDR_TX0;
         pkt[1] = HDR_TX1;
