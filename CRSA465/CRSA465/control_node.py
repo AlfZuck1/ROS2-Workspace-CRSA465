@@ -22,6 +22,9 @@ from crsa465_interfaces.srv import Command
 from control_msgs.msg import JointTrajectoryControllerState
 import asyncio
 import os
+from rclpy.executors import MultiThreadedExecutor
+from queue import Queue
+from functools import partial
 
 try:
     from pymoveit2 import MoveIt2, MoveIt2State
@@ -84,6 +87,7 @@ logger.addHandler(handler)
 move_lock = threading.Lock()
 move_thread = None
 cancel_requested = threading.Event()
+ros_command_queue = Queue()
 
 # ---------------------------------------------------
 # Base de datos
@@ -152,28 +156,34 @@ class ControlNode(Node):
 class CartesianControlNode(ControlNode):
     def __init__(self):
         super().__init__()
-        try:
-            self.PLANNING_GROUP = "arm"
-            self.moveit2 = MoveIt2(
-                node=self,
-                joint_names=robot.CRSA465Config.joint_names(),
-                base_link_name=robot.CRSA465Config.base_link_name(),
-                end_effector_name=robot.CRSA465Config.end_effector_name(),
-                group_name=self.PLANNING_GROUP,
-                callback_group=(ReentrantCallbackGroup())
-            )
-            self.moveit2.max_velocity = 0.5
-            self.moveit2.max_acceleration = 0.5
-            logging.info(f"[ROS] MoveIt2 group '{self.PLANNING_GROUP}' listo.")
-            self.create_subscription(
-                JointTrajectoryControllerState,
-                "/arm_controller/controller_state",
-                controller_state_cb,
-                10
-            )
 
-        except Exception as e:
-            logging.warning(f"[ROS] No se pudo inicializar pymoveit2: {e}")
+        self.moveit2 = MoveIt2(
+            node=self,
+            joint_names=robot.CRSA465Config.joint_names(),
+            base_link_name=robot.CRSA465Config.base_link_name(),
+            end_effector_name=robot.CRSA465Config.end_effector_name(),
+            group_name="arm",
+        )
+
+        self.moveit2.max_velocity = 0.5
+        self.moveit2.max_acceleration = 0.5
+
+        self.command_timer = self.create_timer(
+            0.02,  # 50 Hz
+            self.process_command_queue
+        )
+
+        self.get_logger().info("CartesianControlNode listo con MoveIt2")
+
+    def process_command_queue(self):
+        while not ros_command_queue.empty():
+            fn, args = ros_command_queue.get()
+            try:
+                fn(*args)
+            except Exception as e:
+                self.get_logger().error(str(e))
+
+
 
 # ---------------------------------------------------
 # Funciones de ejecución de movimiento
@@ -250,8 +260,9 @@ def execute_all_trajectories():
                 break
 
             logging.info("[ROS - EX] Ejecutando trayectoria")
-            ros_node.moveit2.execute(traj)
-
+            ros_command_queue.put((
+                ros_node.moveit2.execute(traj,),()
+            ))
             # ⬅⬅⬅ AQUÍ ESTÁ LA DIFERENCIA
             reached = wait_until_reached(
                 eps=0.01,
@@ -272,7 +283,7 @@ def execute_all_trajectories():
             move_lock.release()
         logging.info("[ROS - EX] Ejecución de trayectorias finalizada.")
 
-def plan_robot_trajectory(first_pose: JointState, poses: list, cartesian: bool):
+def plan_robot_trajectory(first_pose: JointState, poses: list, cartesian: bool, velocity: float = 0.5):
     """Planifica la trayectoria del robot dado un estado inicial y una lista de poses o ángulos."""
     global stored_trajectories
     stored_trajectories = []
@@ -341,6 +352,16 @@ def plan_robot_trajectory(first_pose: JointState, poses: list, cartesian: bool):
         # ------------------------------
         position = [float(p["x"]), float(p["y"]), float(p["z"])]
         quat_xyzw = [float(p["qx"]), float(p["qy"]), float(p["qz"]), float(p["qw"])]
+        
+        if velocity <= 0.0:
+            velocity_scale = 0.0
+        elif velocity > 1.0:
+            velocity_scale = 1.0
+        else:
+            velocity_scale = velocity
+
+        ros_node.moveit2.max_velocity = velocity_scale
+        ros_node.moveit2.max_acceleration = 0.5
         
         if i != 0 or cartesian:
             if cartesian:
@@ -454,47 +475,13 @@ async def calibrate_endpoint(request: Request):
     }
 
 
-@app.post("/send_positions")
-async def send_multiple_positions(request: Request):
-    global move_thread
-    
-    data = await request.json()
-    if data.get("password") != PASSWORD:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    poses = data.get("poses", [])
-    if not isinstance(poses, list) or len(poses) == 0:
-        raise HTTPException(status_code=400, detail="Missing or invalid poses list")
-
-    cartesian = bool(data.get("cartesian", False))
-    synchronous = bool(data.get("synchronous", True))
-    cancel_after_secs = float(data.get("cancel_after_secs", 0.0))
-
-    positions = []
-    quats = []
-    for p in poses:
-        if not all(k in p for k in ["x", "y", "z", "qx", "qy", "qz", "qw"]):
-            raise HTTPException(status_code=400, detail=f"Parámetro pose faltante: {p}")
-        positions.append([float(p["x"]), float(p["y"]), float(p["z"])])
-        quats.append([float(p["qx"]), float(p["qy"]), float(p["qz"]), float(p["qw"])])
-
-    acquired = move_lock.acquire(blocking=False)
-    if not acquired:
-        raise HTTPException(status_code=409, detail="Movimiento en progreso. Intente más tarde.")
-    
-    def target():
-        execute_movement(positions, quats, cartesian, synchronous, cancel_after_secs)
-
-    # Lanza la ejecución en un thread separado para no bloquear el servidor
-    move_thread = threading.Thread(target=target, daemon=True)
-    move_thread.start()
-    return {"status": "ok", "message": "Movimiento iniciado."}
-
 @app.get("/stop_motion")
 async def stop_motion():
     global cancel_requested
     try:
-        ros_node.moveit2.cancel_execution()
+        ros_command_queue.put((
+            ros_node.moveit2.cancel_execution, ())
+        )
         cancel_requested.set()
         logging.info("[ROS - SM] Stop motion solicitado")
     except Exception as e:
@@ -524,6 +511,7 @@ async def plan_trajectory(request: Request):
         raise HTTPException(status_code=400, detail="Missing or invalid poses list")
 
     cartesian = bool(data.get("cartesian", False))
+    velocity = float(data.get("velocity", 0.5))
 
     # Crear el JointState inicial
     first_pose = JointState()
@@ -538,7 +526,7 @@ async def plan_trajectory(request: Request):
     ]
 
     # Llamamos a la función auxiliar que hace toda la lógica
-    result = plan_robot_trajectory(first_pose, poses, cartesian)
+    result = plan_robot_trajectory(first_pose, poses, cartesian, velocity)
 
     return {"status": "ok", "trajectory": result}
 
@@ -565,6 +553,49 @@ async def execute_trajectory(request: Request):
 
     return {"status": "ok", "message": "Ejecución de trayectoria iniciada"}
 
+@app.post("/get_ik")
+async def get_ik(request: Request):
+    global ros_node
+    data = await request.json()
+
+    if data.get("password") != PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        first_pose = data["first_pose"]
+        pose = data["target_pose"]
+
+        first_joint_state = JointState()
+        first_joint_state.name = robot.CRSA465Config.joint_names()
+        first_joint_state.position = [
+            float(first_pose["angle1"]),
+            float(first_pose["angle2"]),
+            float(first_pose["angle3"]),
+            float(first_pose["angle4"]),
+            float(first_pose["angle5"]),
+            float(first_pose["angle6"]),
+        ]
+
+        position = [pose["x"], pose["y"], pose["z"]]
+        quat_xyzw = [pose["qx"], pose["qy"], pose["qz"], pose["qw"]]
+
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=400, detail="Missing or invalid pose fields")
+
+    joint_state = ros_node.moveit2.compute_ik(
+            position,
+            quat_xyzw,
+            start_joint_state=first_joint_state
+        )
+
+    if joint_state is None:
+        raise HTTPException(status_code=500, detail="IK computation failed")
+
+    return {
+        "status": "ok",
+        "joint_names": list(joint_state.name),
+        "joint_positions": [float(p) for p in joint_state.position]
+    }
 
 # ---------------------------------------------------
 # CRUD Trajectories
@@ -702,10 +733,12 @@ def ros_thread():
     global ros_node
     rclpy.init()
     ros_node = CartesianControlNode()
-    rclpy.spin(ros_node)
-    ros_node.destroy_node()
-    rclpy.shutdown()
 
+    executor = rclpy.executors.SingleThreadedExecutor()
+    executor.add_node(ros_node)
+
+    executor.spin()
+    
 def main():
     print(f"Generated password for control access: {PASSWORD}", flush=True)
     init_db()

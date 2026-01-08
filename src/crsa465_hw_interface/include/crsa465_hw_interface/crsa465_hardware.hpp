@@ -64,7 +64,8 @@ namespace crsa465_hw_interface
             std::unique_ptr<boost::asio::serial_port> serial_port_;
             std::vector<uint8_t> rx_buffer_;
             std::mutex rx_mtx_;
-            std::deque<std::vector<uint8_t>> tx_queue_;
+            std::deque<std::vector<uint8_t>> tx_cmd_queue_;
+            std::deque<std::vector<uint8_t>> tx_motion_queue_;
             std::mutex tx_mtx_;
             std::thread io_thread_;
             std::atomic<bool> io_running_{false};

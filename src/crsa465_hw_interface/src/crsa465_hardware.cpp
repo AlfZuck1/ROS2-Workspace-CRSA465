@@ -203,7 +203,7 @@ namespace crsa465_hw_interface
 
         {
             std::lock_guard<std::mutex> lk(tx_mtx_);
-            tx_queue_.push_back(pkt);
+            tx_motion_queue_.push_back(pkt);
             pkt_before = pkt;
         }
         return return_type::OK;
@@ -262,19 +262,16 @@ namespace crsa465_hw_interface
                 // ---- Enviar paquetes pendientes ----
                 {
                     std::lock_guard<std::mutex> lk(tx_mtx_);
-                    while (!tx_queue_.empty()) {
-                        auto p = std::move(tx_queue_.front());
-                        tx_queue_.pop_front();
-
-                        try {
-                            // boost::asio::write asegura envío completo
-                            size_t bytes_written = boost::asio::write(*serial_port_, boost::asio::buffer(p));
-                            if(contador % 5 == 0){
-                                RCLCPP_INFO(rclcpp::get_logger("CRS_HW"), "WRITE in IO thread: %zu bytes", bytes_written);
-                            }
-                        } catch (const std::exception &e) {
-                            RCLCPP_ERROR(rclcpp::get_logger("CRS_HW"), "IO write exception: %s", e.what());
-                        }
+                    if (!tx_cmd_queue_.empty()) {
+                        auto p = std::move(tx_cmd_queue_.front());
+                        tx_cmd_queue_.pop_front();
+                        boost::asio::write(*serial_port_, boost::asio::buffer(p));
+                        RCLCPP_INFO(rclcpp::get_logger("CRS_HW"), "CMD SENT (%zu bytes)", p.size());
+                    }
+                    else if (!tx_motion_queue_.empty()) {
+                        auto p = std::move(tx_motion_queue_.front());
+                        tx_motion_queue_.pop_front();
+                        boost::asio::write(*serial_port_, boost::asio::buffer(p));
                     }
                 }
 
@@ -382,7 +379,7 @@ namespace crsa465_hw_interface
 
         int fd = serial_port_->native_handle();
         int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        fcntl(fd, F_SETFL, flags);
 
         RCLCPP_INFO(rclcpp::get_logger("CRS_HW"), "Opened serial %s @ %d (non-blocking via fcntl)", port_.c_str(), baudrate_);
         return true;
@@ -407,25 +404,28 @@ namespace crsa465_hw_interface
         if (cmd == "stop") command_byte = CMD_STOP;
         else if (cmd == "run") command_byte = CMD_RUN;
         else if (cmd == "home") command_byte = CMD_HOME;
-        else if (cmd == "calibrate") command_byte = CMD_CALIBRATE;
-        else 
-        {
+        else{
             RCLCPP_WARN(rclcpp::get_logger("CRS_HW"), "Unknown command: %s", cmd.c_str());
             return false;
         }
 
-        std::vector<uint8_t> pkt;
-        pkt.reserve(2);
-        pkt.push_back(CMD_HEADER);
-        pkt.push_back(command_byte);
+        std::vector<uint8_t> pkt = {
+            CMD_HEADER,
+            command_byte
+        };
 
-        // Encolar de forma thread-safe para que el io_thread lo envíe
         {
             std::lock_guard<std::mutex> lk(tx_mtx_);
-            tx_queue_.push_back(std::move(pkt));
+            tx_cmd_queue_.push_back(pkt);
         }
 
-        RCLCPP_INFO(rclcpp::get_logger("CRS_HW"),"Enqueued command '%s' (0x%02X)", cmd.c_str(), command_byte);
+        RCLCPP_INFO(
+            rclcpp::get_logger("CRS_HW"),
+            "CMD queued '%s' (0x%02X)",
+            cmd.c_str(),
+            command_byte
+        );
+
         return true;
     }
 
@@ -444,12 +444,12 @@ namespace crsa465_hw_interface
 
         {
             std::lock_guard<std::mutex> lk(tx_mtx_);
-            tx_queue_.push_back(std::move(pkt));
+            tx_cmd_queue_.push_back(pkt);
         }
 
         RCLCPP_INFO(
             rclcpp::get_logger("CRS_HW"),
-            "Enqueued CALIBRATE: joint=%d brake=%d pos=%d",
+            "CALIBRATE CMD queued: joint=%d brake=%d pos=%d",
             req.calibrate_j,
             req.brake_release,
             req.move_to_position
